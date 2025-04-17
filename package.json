@@ -1,0 +1,14 @@
+{
+  "name": "auto-stake",
+  "version": "1.0.0",
+  "main": "stake.js",
+  "type": "module",
+  "dependencies": {
+    "chalk": "^5.4.1",
+    "dotenv": "^16.5.0",
+    "ethers": "^6.13.5",
+    "figlet": "^1.8.1",
+    "gradient-string": "^3.0.0",
+    "inquirer": "^12.5.2"
+  }
+}
