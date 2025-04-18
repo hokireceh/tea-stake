@@ -5,22 +5,53 @@ import { ethers } from "ethers";
 import chalk from "chalk";
 import figlet from "figlet";
 import gradient from "gradient-string";
+import axios from "axios";
+
 dotenv.config();
 
 const DEFAULT_AMOUNT = process.env.DEFAULT_AMOUNT || "1.0";
 const RPC_URL = process.env.RPC_URL;
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
+const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
-// Kontrak opsional, aktifkan kalau sudah verif
+// Kontrak opsional
 const ABI = [
   // "function userInfo(address) view returns (uint256 amount, uint256 rewardDebt)"
 ];
 
-// 🧠 Fungsi util buat format & delay
+// 🧠 Delay helper
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// 🪙 Tampilkan header saldo wallet
+// 🎯 Kirim log ke Discord
+async function sendDiscordLog(message, type = "info", extra = "") {
+  if (!WEBHOOK_URL) return;
+
+  const statusMap = {
+    info: { emoji: "ℹ️", color: 3447003 },
+    success: { emoji: "✅", color: 3066993 },
+    error: { emoji: "❌", color: 15158332 },
+    warn: { emoji: "⚠️", color: 15844367 }
+  };
+
+  const { emoji, color } = statusMap[type] || statusMap.info;
+
+  const embed = {
+    title: `${emoji} ${message}`,
+    description: extra,
+    color,
+    timestamp: new Date().toISOString(),
+    footer: { text: "Stake TEA Bot - by HokiReceh" }
+  };
+
+  try {
+    await axios.post(WEBHOOK_URL, { embeds: [embed] });
+  } catch (err) {
+    console.error("Gagal kirim log ke Discord:", err.message);
+  }
+}
+
+// 🪙 Tampilkan saldo wallet
 async function checkWalletStatus(showStakeInfo = false) {
   try {
     const provider = new ethers.JsonRpcProvider(RPC_URL);
@@ -42,33 +73,46 @@ async function checkWalletStatus(showStakeInfo = false) {
       console.log(`${chalk.yellow("📥 Di-Stake :")} ${chalk.bold(`${staked} TEA`)}`);
     }
 
-    console.log(); // new line
+    console.log(); // newline
+
+    await sendDiscordLog("Wallet dicek", "info", `**Address:** \`${address}\`\n**Saldo:** \`${teaBalance} TEA\``);
   } catch (err) {
     console.log(chalk.red("❌ Gagal ambil data saldo:"), chalk.gray(err.message));
-    console.log();
+    await sendDiscordLog("Gagal ambil saldo", "error", err.message);
   }
 }
 
-// ▶️ Eksekusi file stake/withdraw
+// ▶️ Eksekusi script
 function runScript(script, amount, callback) {
   const child = spawn("node", [script, amount], { stdio: "inherit" });
-  child.on("close", (code) => {
-    if (code !== 0) console.log(chalk.red(`❌ Script ${script} keluar dengan kode ${code}`));
+
+  child.on("close", async (code) => {
+    const status = code === 0 ? "success" : "error";
+    const emoji = code === 0 ? "✅" : "❌";
+    await sendDiscordLog(
+      `Script ${script.replace(".js", "")} selesai`,
+      status,
+      `${emoji} **Jumlah:** \`${amount} TEA\`\n📄 **Script:** \`${script}\`\n📦 **Status:** \`${code === 0 ? "SUKSES" : "GAGAL"}\``
+    );
     callback();
   });
 }
 
-// 🔁 Jalankan loop stake/withdraw
+// 🔁 Looping script
 async function loopScript(script) {
   console.log(chalk.blue(`🔁 Loop ${script.replace(".js", "")} dimulai. Tekan Ctrl+C untuk keluar.`));
+  await sendDiscordLog(`Loop ${script.replace(".js", "")} dimulai`, "info");
 
   let isRunning = true;
-  const handleSigInt = () => {
+
+  const handleSigInt = async () => {
     console.log(chalk.yellow("\n⏹️  Loop dihentikan. Kembali ke menu...\n"));
+    await sendDiscordLog(`Loop ${script.replace(".js", "")} dihentikan`, "warn");
     isRunning = false;
     process.off("SIGINT", handleSigInt);
     mainMenu();
   };
+
   process.on("SIGINT", handleSigInt);
 
   while (isRunning) {
@@ -80,7 +124,7 @@ async function loopScript(script) {
 
 // 🚀 Menu utama
 async function mainMenu() {
-  await checkWalletStatus(); // tampilkan saldo duluan
+  await checkWalletStatus();
 
   try {
     const { action } = await inquirer.prompt([
@@ -137,11 +181,13 @@ async function mainMenu() {
         break;
       case "❌  Keluar":
         console.log(chalk.gray("👋 Sampai jumpa, bos."));
+        await sendDiscordLog("Bot ditutup", "warn");
         process.exit();
         break;
     }
   } catch (err) {
     console.log(chalk.red("❌ Terjadi error:"), err.message);
+    await sendDiscordLog("Terjadi error di main menu", "error", err.message);
   }
 }
 
