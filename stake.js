@@ -1,72 +1,130 @@
 import { ethers } from "ethers";
 import dotenv from "dotenv";
+import chalk from "chalk";
+import boxen from "boxen";
+
 dotenv.config();
 
 const RPC_URL = process.env.RPC_URL;
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
-const AMOUNT_TO_STAKE = process.argv[2] || process.env.STAKE_AMOUNT || "1.0";
+const AMOUNT_TO_STAKE = process.argv[2] || "1.0";
 
-const ABI = ["function stake() public payable"];
+// Gas fee metaMask-style (manual)
+const baseMaxFeeGwei = 7397;
+const basePriorityGwei = 3.80132;
+
+let maxFeePerGas = ethers.parseUnits((baseMaxFeeGwei * 1.15).toFixed(2), "gwei");
+let maxPriorityFeePerGas = ethers.parseUnits((basePriorityGwei * 1.15).toFixed(6), "gwei");
+const gasLimit = 70859n;
 
 const provider = new ethers.JsonRpcProvider(RPC_URL);
 const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
-const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, wallet);
+const contract = new ethers.Contract(CONTRACT_ADDRESS, ["function stake() public payable"], wallet);
 
-// 🚀 Gas cepat mode: full priority = baseFee (metamask-style)
-async function getFastFee() {
-  const result = await provider.send("eth_feeHistory", ["0x5", "latest", [50]]);
-  const baseFee = ethers.toBigInt(result.baseFeePerGas.slice(-1)[0]);
-  const priority = baseFee; // full baseFee as tip
-  const maxFee = baseFee + priority;
-  return { baseFee, priority, maxFee };
+async function isPendingTx(address) {
+  const txs = await provider.send("txpool_content", []);
+  const pending = txs?.pending?.[address.toLowerCase()];
+  return pending && Object.keys(pending).length > 0;
 }
 
-async function stakeTea() {
+async function stake() {
   try {
     const value = ethers.parseEther(AMOUNT_TO_STAKE);
-    if (value === 0n) throw new Error("Jumlah staking tidak boleh nol.");
-
-    const { baseFee, priority, maxFee } = await getFastFee();
     const nonce = await provider.getTransactionCount(wallet.address, "pending");
 
-    console.log(`\n🚀 Mulai staking ${AMOUNT_TO_STAKE} TEA`);
-    console.log(`📍 Kontrak: ${CONTRACT_ADDRESS}`);
-    console.log("⚡ Konfigurasi Gas:");
-    console.log(`   - Base Fee       : ${baseFee}`);
-    console.log(`   - Priority Fee   : ${priority}`);
-    console.log(`   - Max Fee        : ${maxFee}`);
-    console.log(`   - Nonce          : ${nonce}\n`);
+    // Cek pending dhisik
+    console.log(chalk.cyan("✅ Ndelok pending dhisik rek..."));
+    const pending = await isPendingTx(wallet.address);
+    if (pending) {
+      console.log(chalk.red("❌ Isih ana transaksi pending. Enteni sek!"));
+      return;
+    }
+    console.log(chalk.green("✅ Ora ana pending, lanjut gas pol!\n"));
 
-    let gasLimit;
+    // Format gas fee info
+    const gwei = (wei) => (Number(ethers.formatUnits(wei, "gwei")).toFixed(2) + " Gwei");
+
+    // Tampilan info gas lan detail staking
+    const display = boxen(
+      `
+${chalk.bold.greenBright("💥 MODE STAKE BOOSTED (Anti Pending)")}
+
+${chalk.gray("👤 Dompet    ")} : ${chalk.green(wallet.address)}
+${chalk.gray("📍 Kontrak   ")} : ${chalk.cyan(CONTRACT_ADDRESS)}
+${chalk.gray("💰 Jumlah    ")} : ${chalk.magenta(AMOUNT_TO_STAKE)} TEA
+${chalk.gray("🔢 Nonce     ")} : ${chalk.gray(nonce)}
+${chalk.gray("⛽ MaxFee    ")} : ${chalk.blueBright(maxFeePerGas.toString())} (${gwei(maxFeePerGas)})
+${chalk.gray("⛽ Prioritas ")} : ${chalk.blueBright(maxPriorityFeePerGas.toString())} (${gwei(maxPriorityFeePerGas)})
+${chalk.gray("📏 GasLimit  ")} : ${chalk.yellow(gasLimit.toString())}
+`,
+      {
+        padding: 1,
+        borderStyle: "round",
+        borderColor: "greenBright",
+        backgroundColor: "#1e1e1e",
+      }
+    );
+    console.log(display);
+
+    let tx;
     try {
-      gasLimit = await contract.stake.estimateGas({ value });
-    } catch {
-      gasLimit = 80_000n;
-      console.warn("⚠️ Estimasi gas gagal. Gunakan default 80,000");
+      tx = await contract.stake({
+        value,
+        gasLimit,
+        nonce,
+        maxFeePerGas,
+        maxPriorityFeePerGas,
+        type: 2,
+      });
+    } catch (err) {
+      if (err.code === "UNKNOWN_ERROR" && err.message.includes("already known")) {
+        console.log(chalk.yellow("⚠️  TX already known! Nyoba resend karo fee luwih dhuwur..."));
+
+        maxFeePerGas = maxFeePerGas * 120n / 100n;
+        maxPriorityFeePerGas = maxPriorityFeePerGas * 120n / 100n;
+
+        tx = await contract.stake({
+          value,
+          gasLimit,
+          nonce,
+          maxFeePerGas,
+          maxPriorityFeePerGas,
+          type: 2,
+        });
+      } else {
+        throw err;
+      }
     }
 
-    const tx = await contract.stake({
-      value,
-      gasLimit,
-      maxPriorityFeePerGas: priority,
-      maxFeePerGas: maxFee,
-      nonce,
-    });
+    const explorerLink = `https://sepolia.tea.xyz/tx/${tx.hash}`;
+    
+    console.log(
+      boxen(
+        `${chalk.greenBright("✅ Transaksi wis mlayu karo sukses!")} 🚀`,
+        {
+          padding: 1,
+          borderStyle: "classic",
+          borderColor: "cyan",
+        }
+      )
+    );
+    
+    // Tampilkan TX hash & explorer nang luar boxen
+    console.log(chalk.gray("🔗 TX Hash    : ") + chalk.cyan(tx.hash));
+    console.log(chalk.gray("🌐 Explorer   : ") + chalk.underline.blue(`https://sepolia.tea.xyz/tx/${tx.hash}`));
 
-    console.log(`✅ TX terkirim!`);
-    console.log(`🔗 TX Hash : ${tx.hash}`);
-    console.log(`🌐 Explorer: https://sepolia.tea.xyz/tx/${tx.hash}\n`);
-
-    // 💡 Tidak menunggu konfirmasi, langsung selesai
-
+    await tx.wait();
+    console.log(chalk.bgGreen.black("🎉 Transaksi wis confirmed rek!"));
   } catch (err) {
-    if (err.message?.includes("replacement transaction underpriced") || err.message?.includes("fee too low")) {
-      console.error("⚠️ Gagal: Gas fee terlalu rendah. Coba naikkan priority fee.");
-    } else {
-      console.error("❌ Error staking:", err?.message || err);
-    }
+    console.error(
+      boxen(`❌ Kacau rek! Ana error:\n${err?.message || err}`, {
+        padding: 1,
+        borderStyle: "double",
+        borderColor: "red",
+      })
+    );
   }
 }
 
-stakeTea();
+stake();
